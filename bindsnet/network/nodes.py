@@ -18,8 +18,8 @@ class Nodes(torch.nn.Module):
         shape: Optional[Iterable[int]] = None,
         traces: bool = False,
         traces_additive: bool = False,
-        tc_trace: Union[float, torch.Tensor] = 113.0,
-        tc_trace_1: Union[float, torch.Tensor] = -93.74279608849928,
+        tc_trace: Union[float, torch.Tensor] = 20,
+        tc_trace_neg: Union[float, torch.Tensor] = 20,
         trace_scale: Union[float, torch.Tensor] = 1.0,
         sum_input: bool = False,
         learning: bool = True,
@@ -68,12 +68,12 @@ class Nodes(torch.nn.Module):
 
         if self.traces:
             self.register_buffer("x", torch.Tensor())  # Firing traces.
-            self.register_buffer("x_1", torch.Tensor())  # Firing traces.
+            self.register_buffer("x_neg", torch.Tensor())  # Firing traces.
             self.register_buffer(
                 "tc_trace", torch.tensor(tc_trace)
             )  # Time constant of spike trace decay.
             self.register_buffer(
-                "tc_trace_1", torch.tensor(tc_trace_1)
+                "tc_trace_neg", torch.tensor(tc_trace_neg)
             )  # Time constant of spike trace decay.
             if self.traces_additive:
                 self.register_buffer(
@@ -83,7 +83,7 @@ class Nodes(torch.nn.Module):
                 "trace_decay", torch.empty_like(self.tc_trace)
             )  # Set in compute_decays.
             self.register_buffer(
-                "trace_decay_1", torch.empty_like(self.tc_trace_1)
+                "trace_decay_neg", torch.empty_like(self.tc_trace_neg)
             )  # Set in compute_decays.
 
         if self.sum_input:
@@ -103,14 +103,14 @@ class Nodes(torch.nn.Module):
         if self.traces:
             # Decay and set spike traces.
             self.x *= self.trace_decay
-            self.x_1 *= self.trace_decay_1
+            self.x_neg *= self.trace_decay_neg
 
             if self.traces_additive:
                 self.x += self.trace_scale * self.s.float()
-                self.x_1 += self.trace_scale * self.s.float()
+                self.x_neg += self.trace_scale * self.s.float()
             else:
                 self.x.masked_fill_(self.s != 0, 1)
-                self.x_1.masked_fill_(self.s != 0, 1)
+                self.x_neg.masked_fill_(self.s != 0, 1)
 
         if self.sum_input:
             # Add current input to running sum.
@@ -125,7 +125,7 @@ class Nodes(torch.nn.Module):
 
         if self.traces:
             self.x.zero_()  # Spike traces.
-            self.x_1.zero_()
+            self.x_neg.zero_()
             
         if self.sum_input:
             self.summed.zero_()  # Summed inputs.
@@ -142,8 +142,8 @@ class Nodes(torch.nn.Module):
             )  # Spike trace decay (per timestep).
             
             
-            self.trace_decay_1 = torch.exp(
-                -self.dt / self.tc_trace_1
+            self.trace_decay_neg = torch.exp(
+                -self.dt / self.tc_trace_neg
             )  # Spike trace decay (per timestep).
 
     def set_batch_size(self, batch_size) -> None:
@@ -158,7 +158,7 @@ class Nodes(torch.nn.Module):
 
         if self.traces:
             self.x = torch.zeros(batch_size, *self.shape, device=self.x.device)
-            self.x_1 = torch.zeros(batch_size, *self.shape, device=self.x_1.device)
+            self.x_neg = torch.zeros(batch_size, *self.shape, device=self.x_neg.device)
 
         if self.sum_input:
             self.summed = torch.zeros(
@@ -197,6 +197,7 @@ class Input(Nodes, AbstractInput):
         traces: bool = False,
         traces_additive: bool = False,
         tc_trace: Union[float, torch.Tensor] = 20.0,
+        tc_trace_neg: Union[float, torch.Tensor] = 20.0,
         trace_scale: Union[float, torch.Tensor] = 1.0,
         sum_input: bool = False,
         **kwargs,
@@ -210,6 +211,7 @@ class Input(Nodes, AbstractInput):
         :param traces: Whether to record decaying spike traces.
         :param traces_additive: Whether to record spike traces additively.
         :param tc_trace: Time constant of spike trace decay.
+        :param tc_trace_neg: Time constant of spike trace decay.
         :param trace_scale: Scaling factor for spike trace.
         :param sum_input: Whether to sum all inputs.
         """
@@ -219,6 +221,7 @@ class Input(Nodes, AbstractInput):
             traces=traces,
             traces_additive=traces_additive,
             tc_trace=tc_trace,
+            tc_trace_neg=tc_trace_neg,
             trace_scale=trace_scale,
             sum_input=sum_input,
         )
@@ -392,6 +395,7 @@ class IFNodes(Nodes):
         traces: bool = False,
         traces_additive: bool = False,
         tc_trace: Union[float, torch.Tensor] = 20.0,
+        tc_trace_neg: Union[float, torch.Tensor] = 20.0,
         trace_scale: Union[float, torch.Tensor] = 1.0,
         sum_input: bool = False,
         thresh: Union[float, torch.Tensor] = -52.0,
@@ -409,6 +413,7 @@ class IFNodes(Nodes):
         :param traces: Whether to record spike traces.
         :param traces_additive: Whether to record spike traces additively.
         :param tc_trace: Time constant of spike trace decay.
+        :param tc_trace_neg: Time constant of spike trace decay.
         :param trace_scale: Scaling factor for spike trace.
         :param sum_input: Whether to sum all inputs.
         :param thresh: Spike threshold voltage.
@@ -422,6 +427,7 @@ class IFNodes(Nodes):
             traces=traces,
             traces_additive=traces_additive,
             tc_trace=tc_trace,
+            tc_trace_neg=tc_trace_neg,
             trace_scale=trace_scale,
             sum_input=sum_input,
         )
@@ -505,6 +511,7 @@ class LIFNodes(Nodes):
         traces: bool = False,
         traces_additive: bool = False,
         tc_trace: Union[float, torch.Tensor] = 20.0,
+        tc_trace_neg: Union[float, torch.Tensor] = 20.0,
         trace_scale: Union[float, torch.Tensor] = 1.0,
         sum_input: bool = False,
         thresh: Union[float, torch.Tensor] = -52.0,
@@ -539,6 +546,7 @@ class LIFNodes(Nodes):
             traces=traces,
             traces_additive=traces_additive,
             tc_trace=tc_trace,
+            tc_trace_neg=tc_trace_neg,
             trace_scale=trace_scale,
             sum_input=sum_input,
         )

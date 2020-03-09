@@ -240,6 +240,8 @@ class WeightDependentPostPre(LearningRule):
         nu: Optional[Union[float, Sequence[float]]] = None,
         reduction: Optional[callable] = None,
         weight_decay: float = 0.0,
+        tc_trace: float = 20,
+        tc_trace_neg: float = 20,
         **kwargs
     ) -> None:
         # language=rst
@@ -259,7 +261,29 @@ class WeightDependentPostPre(LearningRule):
             weight_decay=weight_decay,
             **kwargs
         )
-
+        
+        self.tc_trace = tc_trace
+        self.tc_trace_neg = tc_trace_neg
+        
+        self.interval = 100
+        
+        self.fl = open("C:/Users/Всеволод/Desktop/STDP.txt",'r')
+        
+        self.STDP_base =  torch.ones([101, 120])
+        
+        i = 0
+        k = 0
+        for line in self.fl:
+    
+            for sym in line.split():
+                
+                self.STDP_base[i][k]= float(sym) 
+                k += 1
+            k = 0            
+            i += 1
+        i = 0       
+        self.fl.close()
+        
         assert self.source.traces, "Pre-synaptic nodes must record spike traces."
         assert (
             connection.wmin != -np.inf and connection.wmax != np.inf
@@ -276,28 +300,61 @@ class WeightDependentPostPre(LearningRule):
             raise NotImplementedError(
                 "This learning rule is not supported for this Connection type."
             )
-
-           
             
-    def G_neg(self, g_neg= 0.137, G_0_neg= -3.5, R_G_neg= 1230):
-        d= 1/self.connection.w         
-        return G_0_neg*(g_neg + np.exp(-d/R_G_neg))
+    def G_neg(self, R, g_neg= 0.137, G_0_neg= -3.5, R_G_neg= 1230):       
+        return G_0_neg*(g_neg + np.exp(-R/R_G_neg))
     
-    def G_pos(self, g_pos= 23.2, G_0_pos= 0.046, R_G_pos= 790):
-        d= 1/self.connection.w 
-        return G_0_pos*(g_pos + d*np.exp(-d/R_G_pos))
+    def G_pos(self, R, g_pos= 23.2, G_0_pos= 0.046, R_G_pos= 790):
+        return G_0_pos*(g_pos + R*np.exp(-R/R_G_pos))
             
-    def c_neg(self, c_c_neg= -0.53, a_0_neg= 1.0, R_c_neg= 810):
-        d= 1/self.connection.w 
-        return a_0_neg*(c_c_neg + np.exp(-d/R_c_neg))
-        #return 0
+    def c_neg(self, R, c_c_neg= -0.53, a_0_neg= 1.0, R_c_neg= 810):
+        #return a_0_neg*(c_c_neg + np.exp(-R/R_c_neg))
+        return 0
     
-    def c_pos(self, c_c_pos= 0.01, a_0_pos= -1.7, R_c_pos= 130):
-        d= 1/self.connection.w 
-        return a_0_pos*(c_c_pos + np.exp(-d/R_c_pos))    
-        #return 0
+    def c_pos(self, R, c_c_pos= 0.01, a_0_pos= -1.7, R_c_pos= 130):
+        #return a_0_pos*(c_c_pos + np.exp(-R/R_c_pos))    
+        return 0
         
+    def Ohm_to_weight(self, Ohm, Ohm_min=1000, Ohm_max=10000):
+        weight = 1/(Ohm)
+        return (weight - 1/Ohm_max) / (1/Ohm_min - 1/Ohm_max)
+    
+    def weight_to_Ohm(self, weight, Ohm_min=1000, Ohm_max=10000):
+        Ohm = 1 / (weight * (1/Ohm_min - 1/Ohm_max) + 1/Ohm_max)
+        return Ohm
+    
+    def round_to_percent(self, tensor):
+        
+        tensor = tensor *100
+        
+        #print(float(tensor[1,1]))
+        
+        for i in range (tensor.size(0)):
             
+            for k in range (tensor.size(1)):
+            
+                tensor[i][k] = int(round(float(tensor[i][k])))
+        
+        return tensor
+        
+    
+    def delta_w_custom(self, delta):
+        
+        first_index = self.round_to_percent(self.connection.w)
+        second_index = (delta + 60)
+        for i in range (first_index.size(0)):
+            
+            for k in range (first_index.size(1)):
+                
+                if (second_index[i][k] > 120) or (second_index[i][k] < 0):
+                
+                    second_index[i][k] = 0
+                
+                delta[i][k] = self.STDP_base[int(first_index[i][k])][int(second_index[i][k])]
+        
+        return delta
+    
+    
     def _connection_update(self, **kwargs) -> None:
         # language=rst
         """
@@ -306,39 +363,39 @@ class WeightDependentPostPre(LearningRule):
         batch_size = self.source.batch_size
 
         source_s = self.source.s.view(batch_size, -1).unsqueeze(2).float()
-        source_x_1 = self.source.x_1.view(batch_size, -1).unsqueeze(2)
+        source_x = self.source.x.view(batch_size, -1).unsqueeze(2)
         target_s = self.target.s.view(batch_size, -1).unsqueeze(1).float()
-        target_x = self.target.x.view(batch_size, -1).unsqueeze(1)
+        target_x = self.target.x_neg.view(batch_size, -1).unsqueeze(1)
 
         update = 0
-        
-        G_neg= self.G_neg()
-        G_pos= self.G_pos()
-        
-        c_neg= self.c_neg()
-        for i in range (source_s.size(1)):
-            c_neg[i]= c_neg[i]*source_s[0,i]
-        
-        c_pos= self.c_pos()
-        for i in range (target_s.size(2)):
-            for k in range (c_pos.size(0)):
-                c_pos[k,i]= c_pos[k,i]*target_s[0,0,i]
-        
-       # print(source_s, c_neg)
+        Ohm_max = 10000
+        Ohm_min = 1000
 
+        G_neg = self.G_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        G_pos = self.G_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        c_neg = self.c_neg(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        c_pos = self.c_pos(self.weight_to_Ohm(self.connection.w, Ohm_min, Ohm_max))
+        
+        #print(G_neg.size(), G_pos.size(), c_neg.size(),c_pos.size())
+        #for i in range (source_s.size(1)):
+          #  c_neg[i]= c_neg[i]*source_s[0,i]
+        
+       # for i in range (target_s.size(2)):
+        #    for k in range (c_pos.size(0)):
+         #       c_pos[k,i]= c_pos[k,i]*target_s[0,0,i]
+        
         # Pre-synaptic update.
         
         outer_product = self.reduction(torch.bmm(source_s, target_x), dim=0)
-        update += G_neg*( outer_product  + c_neg)
-         
+        update += self.nu[0] * self.delta_w_custom(-self.tc_trace_neg*np.log(outer_product)) # + c_neg)
+       # print(-self.tc_trace_neg*np.log(outer_product))
+        
         # Post-synaptic update.
         
-        outer_product = self.reduction(torch.bmm(source_x_1, target_s), dim=0)
-        update += G_pos*( outer_product  + c_pos)
+        outer_product = self.reduction(torch.bmm(source_x, target_s), dim=0)
+        update += self.nu[1] * self.delta_w_custom(-self.tc_trace*np.log(outer_product)) # + c_pos)
         
         self.connection.w += update
-        
-        
 
         super().update()
 

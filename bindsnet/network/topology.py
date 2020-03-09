@@ -68,6 +68,10 @@ class AbstractConnection(ABC, Module):
         self.norm_by_max_from_shadow_weights = kwargs.get(
             "norm_by_max_from_shadow_weights", False
         )
+        self.impulse_state = torch.zeros(source.n)
+        self.impulse_amplitude = 3.0
+        self.impulse_length = 60.0
+        self.a_pre = 0
 
         if self.update_rule is None:
             self.update_rule = NoOp
@@ -168,13 +172,40 @@ class Connection(AbstractConnection):
             if self.wmin != -np.inf or self.wmax != np.inf:
                 w = torch.clamp(w, self.wmin, self.wmax)
 
+                
+                
+                
+                
+                
+                
         self.w = Parameter(w, False)
         self.b = Parameter(kwargs.get("b", torch.zeros(target.n)), False)
 
         if self.norm_by_max_from_shadow_weights:
             self.shadow_w = self.w.clone().detach()
             self.prev_w = self.w.clone().detach()
+    
+    
+    def update_impulse_state(self, s):
+        self.impulse_state += (self.impulse_state > 0).float().view(-1) # adds 1 on where were spikes before
+        self.impulse_state += (self.impulse_state == 0).float() * s.float().view(-1) # adds 1 on spikes
+        impulse = self.impulse_curve()
+        self.impulse_state *= (self.impulse_state < self.impulse_length).float()
+        return impulse
 
+    def impulse_curve(self):
+        impulse_bias = self.impulse_amplitude *(self.impulse_state == self.impulse_length/2 ).float() + self.impulse_amplitude *(self.impulse_state == (self.impulse_length/2 + 1) ).float()
+        impulse = -0.1 * (self.impulse_state > 0).float().view(-1) + impulse_bias 
+        #impulse *= -1
+       # impulse = self.impulse_amplitude * ((self.impulse_state)/(self.impulse_length/2)) * (self.impulse_state <= (self.impulse_length/2)).float()
+    
+       # impulse -= self.impulse_amplitude * ((self.impulse_length - self.impulse_state)/(self.impulse_length/2)) * (self.impulse_state <=  (self.impulse_length/2)).float()
+        #impulse (self.impulse_state >= self.impulse_length).float().view(-1)
+       
+        
+        return impulse
+      
+    
     def compute(self, s: torch.Tensor) -> torch.Tensor:
         # language=rst
         """
@@ -185,8 +216,21 @@ class Connection(AbstractConnection):
                  decaying spike activation).
         """
         # Compute multiplication of spike activations by weights and add bias.
-        post = s.float().view(s.size(0), -1) @ self.w + self.b
-        return post.view(s.size(0), *self.target.shape)
+        # language=rst
+        """
+        Compute pre-activations given spikes using connection weights.
+
+        :param s: Incoming spikes.
+        :return: Incoming spikes multiplied by synaptic weights (with or without decaying spike activation).
+        """
+        impulse = self.update_impulse_state(s)
+        self.a_pre += impulse
+
+        # Compute multiplication of spike activations by connection weights.
+        a_post = self.a_pre @ self.w
+        return a_post.view(*self.target.shape)
+
+
 
     def update(self, **kwargs) -> None:
         # language=rst
@@ -234,6 +278,8 @@ class Connection(AbstractConnection):
         Contains resetting logic for the connection.
         """
         super().reset_()
+        self.a_pre = torch.zeros_like(self.a_pre)
+        self.impulse_state = torch.zeros_like(self.impulse_state)
 
 
 class Conv2dConnection(AbstractConnection):
